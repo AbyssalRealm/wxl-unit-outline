@@ -46,6 +46,7 @@ namespace wxl::scripts::outline
         void EdgePass(game::gx::Device9 dev);         // composite the mask into the frame
 
         // --- helpers ---
+        bool ShouldStampBatch(game::gx::Device9 dev) const;
         int  FindTarget(void* model) const;           // model or any parent in the list
         void AddTarget(unsigned long long guid, void* player);
         static void ColorForReaction(int reaction, float* outRgba);
@@ -56,7 +57,8 @@ namespace wxl::scripts::outline
         Target                     targets_[kMaxTargets]{};
         int                        count_       = 0;
         game::gx::RenderTarget     mask_{};
-        void*                      colorPS_     = nullptr; // fills the silhouette mask
+        void*                      colorPS_     = nullptr; // fills opaque batches into the silhouette mask
+        void*                      cutoutPS_    = nullptr; // fills alpha-tested batches into the silhouette mask
         void*                      edgePS_      = nullptr; // edge-detects the mask into a line
         bool                       maskCleared_ = false;
         float                      thickness_   = 1.5f;

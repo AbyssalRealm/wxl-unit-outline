@@ -20,6 +20,12 @@
 #include "game/unit/Unit.hpp"
 #include "game/world/World.hpp"
 
+#include <d3d9.h>
+
+#ifdef GetObject
+#undef GetObject
+#endif
+
 namespace wxl::scripts::outline
 {
     namespace gx    = wxl::game::gx;
@@ -28,6 +34,30 @@ namespace wxl::scripts::outline
     namespace unit  = wxl::game::unit;
 
     constexpr uint32_t kFmtA8R8G8B8 = 21;
+
+    class ScopedDeviceState final
+    {
+    public:
+        explicit ScopedDeviceState(gx::Device9 dev)
+        {
+            auto* d = static_cast<IDirect3DDevice9*>(dev.raw());
+            if (d && SUCCEEDED(d->CreateStateBlock(D3DSBT_ALL, &state_)) && state_)
+                state_->Capture();
+        }
+
+        ~ScopedDeviceState() { Restore(); }
+
+        void Restore()
+        {
+            if (!state_) return;
+            state_->Apply();
+            state_->Release();
+            state_ = nullptr;
+        }
+
+    private:
+        IDirect3DStateBlock9* state_ = nullptr;
+    };
 
     Outline::Outline()
     {
@@ -46,9 +76,10 @@ namespace wxl::scripts::outline
     bool Outline::EnsureResources(gx::Device9 dev)
     {
         if (!colorPS_)      colorPS_ = gx::CompilePixelShader(dev, kColorHLSL, "ps_2_0");
+        if (!cutoutPS_)     cutoutPS_ = gx::CompilePixelShader(dev, kCutoutColorHLSL, "ps_2_0");
         if (!edgePS_)       edgePS_  = gx::CompilePixelShader(dev, kEdgeHLSL,  "ps_2_0");
         if (!mask_.surface) gx::EnsureBackbufferTarget(dev, mask_, kFmtA8R8G8B8);
-        return colorPS_ && edgePS_ && mask_.surface;
+        return colorPS_ && cutoutPS_ && edgePS_ && mask_.surface;
     }
 
     int Outline::FindTarget(void* model) const
@@ -88,13 +119,26 @@ namespace wxl::scripts::outline
         AddTarget(world::TargetGuid(),    player);
     }
 
+    bool Outline::ShouldStampBatch(gx::Device9 dev) const
+    {
+        if (!dev) return false;
+
+        // Attached particles, glows and billboard effects render alpha-blended quads through the same
+        // model context. Letting them into the mask makes the edge pass outline their broad cards instead
+        // of the unit mesh.
+        return dev.GetRenderState(gx::rs::kAlphaBlend) == 0;
+    }
+
     // Draw the model again into the mask render target, with full device-state save/restore.
     void Outline::StampSilhouette(gx::Device9 dev, const ev::M2BatchDrawArgs& a, int idx)
     {
+        ScopedDeviceState state(dev);
         void* oldRT = nullptr; dev.GetRenderTarget(0, &oldRT);
         void* oldDS = nullptr; dev.GetDepthStencil(&oldDS);
         void* oldPS = nullptr; dev.GetPixelShader(&oldPS);
         unsigned char oldVP[24]; dev.GetViewport(oldVP);
+        const unsigned alphaRef = dev.GetRenderState(D3DRS_ALPHAREF);
+        const bool alphaCutout = dev.GetRenderState(D3DRS_ALPHATESTENABLE) != 0 && alphaRef >= 8;
         const unsigned sAB = dev.GetRenderState(gx::rs::kAlphaBlend);
         const unsigned sZE = dev.GetRenderState(gx::rs::kZEnable);
         const unsigned sZW = dev.GetRenderState(gx::rs::kZWrite);
@@ -121,7 +165,7 @@ namespace wxl::scripts::outline
             maskCleared_ = true;
         }
         dev.SetRenderState(gx::rs::kAlphaBlend, 0);
-        dev.SetPixelShader(colorPS_);
+        dev.SetPixelShader(alphaCutout ? cutoutPS_ : colorPS_);
         dev.SetPixelShaderConstantF(0, targets_[idx].color, 1);
         dev.DrawIndexedPrimitive(a.primType, a.baseVertex, a.minIndex, a.numVerts, a.startIndex, a.primCount);
 
@@ -133,6 +177,7 @@ namespace wxl::scripts::outline
         dev.SetRenderState(gx::rs::kZEnable, sZE);
         dev.SetRenderState(gx::rs::kZWrite, sZW);
         dev.SetRenderState(gx::rs::kZFunc, sZF);
+        state.Restore();
         gx::Release(oldRT);
         gx::Release(oldDS);
         gx::Release(oldPS);
@@ -140,6 +185,7 @@ namespace wxl::scripts::outline
 
     void Outline::EdgePass(gx::Device9 dev)
     {
+        ScopedDeviceState state(dev);
         const unsigned sZE = dev.GetRenderState(gx::rs::kZEnable);
         const unsigned sAB = dev.GetRenderState(gx::rs::kAlphaBlend);
         const unsigned sSB = dev.GetRenderState(gx::rs::kSrcBlend);
@@ -166,14 +212,18 @@ namespace wxl::scripts::outline
         dev.SetRenderState(gx::rs::kAlphaBlend, sAB);
         dev.SetRenderState(gx::rs::kSrcBlend, sSB);
         dev.SetRenderState(gx::rs::kDestBlend, sDB);
+        state.Restore();
     }
 
     void Outline::OnM2Batch(const ev::M2BatchDrawArgs& a)
     {
-        if (count_ == 0 || !colorPS_ || !mask_.surface) return;
+        if (count_ == 0 || !colorPS_ || !cutoutPS_ || !mask_.surface) return;
         const int idx = FindTarget(a.model);
         if (idx < 0) return;
-        StampSilhouette(gx::Device9(a.device), a, idx);
+
+        gx::Device9 dev(a.device);
+        if (!ShouldStampBatch(dev)) return;
+        StampSilhouette(dev, a, idx);
     }
 
     void Outline::OnEndScene(const ev::EndSceneArgs& a)

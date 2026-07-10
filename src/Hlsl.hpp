@@ -18,8 +18,16 @@
 
 namespace
 {
-    // Writes the model color into the mask, following the texture alpha cutout (wings, etc.).
+    // Writes opaque model batches into the mask. Do not sample texture alpha here: many diffuse
+    // alpha channels carry material/detail data and would turn the silhouette into internal noise.
     const char* kColorHLSL =
+        "float4 c0 : register(c0);\n"
+        "float4 main(float2 uv : TEXCOORD0) : COLOR0 {\n"
+        "  return c0;\n"
+        "}\n";
+
+    // Writes alpha-tested batches into the mask, following real cutouts (wings, hair cards, etc.).
+    const char* kCutoutColorHLSL =
         "sampler2D s0 : register(s0);\n"
         "float4 c0 : register(c0);\n"
         "float4 main(float2 uv : TEXCOORD0) : COLOR0 {\n"
