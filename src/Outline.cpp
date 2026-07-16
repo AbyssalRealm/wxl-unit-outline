@@ -95,7 +95,7 @@ namespace wxl::scripts::outline
         if (!guid || count_ >= kMaxTargets) return;
         const bool isPlayer = (guid >> 32) == 0;
 
-        void* obj = world::GetObject(guid, isPlayer ? world::kTypeMaskPlayer : world::kTypeMaskUnit);
+        void* obj = world::ResolveObject(guid, isPlayer ? world::kTypeMaskPlayer : world::kTypeMaskUnit);
         if (!obj) return;
 
         void* model = unit::Model(obj);
@@ -113,7 +113,7 @@ namespace wxl::scripts::outline
 
     void Outline::RebuildTargets()
     {
-        void* player = world::GetObject(world::ActivePlayerGuid(), world::kTypeMaskPlayer);
+        void* player = world::ResolveObject(world::ActivePlayerGuid(), world::kTypeMaskPlayer);
         count_ = 0;
         AddTarget(world::MouseoverGuid(), player);
         AddTarget(world::TargetGuid(),    player);
